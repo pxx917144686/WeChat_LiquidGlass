@@ -43,4 +43,4 @@ jobs:
         uses: actions/upload-artifact@v4.6.0
         with:
           name: WeChat_LiquidGlass
-          path: packages/*.deb
+          path: *.deb

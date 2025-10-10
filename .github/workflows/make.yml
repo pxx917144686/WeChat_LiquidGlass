@@ -43,7 +43,7 @@ jobs:
           make package THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 -j$(sysctl -n hw.ncpu)
           make package THEOS_PACKAGE_SCHEME=roothide FINALPACKAGE=1 -j$(sysctl -n hw.ncpu)
 
-      - name: Upload specific Deb packages
+      - name: Upload Deb packages
         uses: actions/upload-artifact@v4.6.0
         with:
           name: WeChat_LiquidGlass

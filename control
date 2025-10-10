@@ -1,0 +1,9 @@
+Package: com.wechat.pxx917144686
+Name: WeChat Liquid Glass
+Version: 1.0.2
+Architecture: iphoneos-arm64
+Description: 为微信启用系统级 Liquid Glass 效果
+Maintainer: pxx917144686
+Author: pxx917144686
+Section: Tweaks
+Depends: mobilesubstrate (>= 0.9.5000)

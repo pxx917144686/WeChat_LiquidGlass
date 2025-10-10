@@ -1,0 +1,88 @@
+name: build deb
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+        with:
+          submodules: true
+          fetch-depth: 1
+
+      - name: Check cache
+        run: |
+          echo upstream_heads=`git ls-remote https://github.com/roothide/theos | head -n 1 | cut -f 1`-`git ls-remote https://github.com/theos/sdks | head -n 1 | cut -f 1` >> $GITHUB_ENV
+
+      - name: Use cache
+        id: cache
+        uses: actions/cache@v4.2.1
+        with:
+          path: ${{ github.workspace }}/theos
+          key: ${{ runner.os }}-${{ env.upstream_heads }}
+
+      - name: Prepare Theos
+        uses: huami1314/theos-action@main
+
+      - name: Ensure GNU Make and speed up Homebrew
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+          HOMEBREW_NO_INSTALL_CLEANUP: 1
+        run: |
+          if ! command -v gmake >/dev/null 2>&1 && ! command -v make >/dev/null 2>&1; then
+            brew install make
+          fi
+          echo "$(brew --prefix)/opt/make/libexec/gnubin" >> $GITHUB_PATH
+
+      - name: Install ccache
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+          HOMEBREW_NO_INSTALL_CLEANUP: 1
+        run: |
+          brew install ccache || true
+          echo "max_size = 2G" > ~/.ccache/ccache.conf || true
+          echo "compiler_check = content" >> ~/.ccache/ccache.conf || true
+          echo "CC=ccache clang" >> $GITHUB_ENV
+          echo "CXX=ccache clang++" >> $GITHUB_ENV
+
+      - name: Cache ccache
+        id: cache-ccache
+        uses: actions/cache@v4.2.1
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ hashFiles('**/*.{m,mm,xm,swift,h,c,cpp,cc}','Makefile','**/*.mk') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
+      - name: Cache Theos build artifacts
+        id: cache-theos
+        uses: actions/cache@v4.2.1
+        with:
+          path: .theos
+          key: theos-${{ runner.os }}-${{ env.upstream_heads }}-${{ hashFiles('**/*.{m,mm,xm,swift,h,c,cpp,cc}','Makefile','**/*.mk','WeChat.plist') }}
+          restore-keys: |
+            theos-${{ runner.os }}-${{ env.upstream_heads }}-
+
+      - name: Build package
+        run: |
+          rm -f ./*.deb || true
+          make package FINALPACKAGE=1 -j$(sysctl -n hw.ncpu)
+          make package THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1 -j$(sysctl -n hw.ncpu)
+          make package THEOS_PACKAGE_SCHEME=roothide FINALPACKAGE=1 -j$(sysctl -n hw.ncpu)
+
+      - name: Upload specific Deb packages
+        uses: actions/upload-artifact@v4.6.0
+        with:
+          name: WeChat_LiquidGlass
+          path: ./*.deb
+
+      - name: Post Use cache
+        if: always()
+        run: echo "Cache step post-run"
+
+

@@ -4,17 +4,22 @@
 #import <UIKit/UIKit.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 
 // 前向声明：早期构造器调用
-static void persistLiquidGlassPrefs(void);
+static void applyOrClearLiquidGlassPrefs(BOOL enable);
+static BOOL isLiquidGlassEnabled(void);
+static void setLiquidGlassEnabled(BOOL enable);
 static void installTabBarFixHooks(void);
 static void applyTabBarSingleLayer(UITabBar *tabBar);
 static void hideTabBarBackgroundRecursive(UIView *view);
+static void installSettingsEntryHook(void);
 
 static void applyVolatileLiquidGlassPrefs(void) __attribute__((unused));
 static void applyVolatileLiquidGlassPrefs(void) {
     @try {
         if ([[NSProcessInfo processInfo] operatingSystemVersion].majorVersion < 26) return;
+        if (!isLiquidGlassEnabled()) return;
         NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
         NSDictionary *volatilePrefs = @{
             @"com.apple.SwiftUI.IgnoreSolariumLinkedOnCheck": @YES,
@@ -34,8 +39,8 @@ static void applyVolatileLiquidGlassPrefs(void) {
 }
 
 
-// 持久化写入到应用域（必须，iOS26+）
-static void persistLiquidGlassPrefs(void) {
+// 根据开关在应用域写入/清理偏好
+static void applyOrClearLiquidGlassPrefs(BOOL enable) {
     @try {
         if ([[NSProcessInfo processInfo] operatingSystemVersion].majorVersion < 26) return;
         NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
@@ -53,10 +58,25 @@ static void persistLiquidGlassPrefs(void) {
             CFSTR("com.apple.UIKit.ForceSystemBlur"),
         };
         for (size_t i = 0; i < sizeof(keys)/sizeof(keys[0]); i++) {
-            CFPreferencesSetAppValue(keys[i], kCFBooleanTrue, appID);
+            if (enable) {
+                CFPreferencesSetAppValue(keys[i], kCFBooleanTrue, appID);
+            } else {
+                // 关闭时移除键，避免“永久生效”
+                CFPreferencesSetAppValue(keys[i], NULL, appID);
+            }
         }
         CFPreferencesAppSynchronize(appID);
     } @catch (__unused NSException *e) {}
+}
+
+static BOOL isLiquidGlassEnabled(void) {
+    return [[NSUserDefaults standardUserDefaults] boolForKey:@"xg_liquid_glass_enabled"];
+}
+
+static void setLiquidGlassEnabled(BOOL enable) {
+    [[NSUserDefaults standardUserDefaults] setBool:enable forKey:@"xg_liquid_glass_enabled"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    applyOrClearLiquidGlassPrefs(enable);
 }
 
 
@@ -65,16 +85,15 @@ __attribute__((constructor(101)))
 static void wechat_early_ctor(void) {
     @autoreleasepool {
         if ([[NSProcessInfo processInfo] operatingSystemVersion].majorVersion < 26) return;
-        setenv("DYLD_FORCE_LIQUID_GLASS", "1", 1);
-        setenv("UIKIT_ENABLE_LIQUID_GLASS", "1", 1);
-        setenv("UIKIT_FORCE_LIQUID_GLASS", "1", 1);
-        setenv("UIKIT_ENABLE_SYSTEM_MATERIALS", "1", 1);
-        setenv("UIKIT_FORCE_SYSTEM_MATERIALS", "1", 1);
-        setenv("UIKIT_LIQUID_GLASS_MODE", "FORCE", 1);
-        setenv("UIKIT_SYSTEM_MATERIALS_MODE", "FORCE", 1);
-        setenv("SWIFTUI_IGNORE_SOLARIUM_CHECK", "1", 1);
-        persistLiquidGlassPrefs();
-        installTabBarFixHooks();
+        // 避免使用环境变量导致黑屏风险，仅使用偏好键控制
+        applyOrClearLiquidGlassPrefs(isLiquidGlassEnabled());
+        // 只有开启时才安装功能性 Hook，且延后至主线程，等窗口就绪
+        if (isLiquidGlassEnabled()) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                installTabBarFixHooks();
+            });
+        }
+        installSettingsEntryHook();
     }
 }
 
@@ -102,11 +121,18 @@ static void hideTabBarBackgroundRecursive(UIView *view) {
 
 static void applyTabBarSingleLayer(UITabBar *tabBar) {
     if (!tabBar) return;
+    if (!isLiquidGlassEnabled()) return; // 关闭时完全不改动 TabBar
+    // 防抖：同一 tabBar 只应用一次，避免频繁 layout 导致卡顿
+    static const void *kLGAppliedKey = &kLGAppliedKey;
+    NSNumber *applied = objc_getAssociatedObject(tabBar, kLGAppliedKey);
+    if ([applied boolValue]) return;
     // 统一使用系统外观：去掉任何自绘/毛玻璃叠层
     @try {
-        if (@available(iOS 14.0, *)) {
+        if (@available(iOS 13.0, *)) {
             UITabBarAppearance *appearance = tabBar.standardAppearance ?: [[UITabBarAppearance alloc] init];
-            appearance.backgroundEffect = nil; // 保留系统 Liquid Glass，由系统自身决定
+            // 开启 Liquid Glass：透明背景，交由系统视觉效果处理
+            [appearance configureWithTransparentBackground];
+            appearance.backgroundEffect = nil;
             appearance.backgroundColor = [UIColor clearColor];
             appearance.shadowColor = [UIColor clearColor];
             appearance.shadowImage = [UIImage new];
@@ -126,6 +152,9 @@ static void applyTabBarSingleLayer(UITabBar *tabBar) {
     @try {
         hideTabBarBackgroundRecursive(tabBar);
     } @catch (__unused NSException *e) {}
+
+    // 标记已应用，避免重复执行
+    objc_setAssociatedObject(tabBar, kLGAppliedKey, @(YES), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 static void swizzle(Class cls, SEL original, SEL replacement) {
@@ -189,3 +218,157 @@ static void installTabBarFixHooks(void) {
         });
     } @catch (__unused NSException *e) {}
 }
+
+#pragma mark - 在微信设置页插入“Liquid Glass”入口
+
+@interface WCTableViewManager : NSObject
+- (id)getSectionAt:(NSInteger)index;
+- (UITableView *)getTableView;
+@end
+
+@interface WCTableViewSectionManager : NSObject
+- (NSArray *)cells;
+- (void)setCells:(NSArray *)cells;
+@end
+
+@interface WCTableViewNormalCellManager : NSObject
++ (instancetype)normalCellForSel:(SEL)sel target:(id)target title:(NSString *)title rightValue:(id)rightValue accessoryType:(NSInteger)type;
+@end
+
+@interface MMTableView : UITableView @end
+
+static BOOL xg_settings_hook_installed = NO;
+
+static void xg_swizzle(Class cls, SEL original, SEL replacement) {
+    Method m1 = class_getInstanceMethod(cls, original);
+    Method m2 = class_getInstanceMethod(cls, replacement);
+    if (!m1 || !m2) return;
+    BOOL added = class_addMethod(cls, original, method_getImplementation(m2), method_getTypeEncoding(m2));
+    if (added) {
+        class_replaceMethod(cls, replacement, method_getImplementation(m1), method_getTypeEncoding(m1));
+    } else {
+        method_exchangeImplementations(m1, m2);
+    }
+}
+
+// 使用 C 函数实现，以避免对目标类产生编译期符号引用
+static void xg_reloadTableData_impl(id self, SEL _cmd) {
+    // 调用原始实现（已与 xg_reloadTableData 交换）
+    void (*orig)(id, SEL) = (void (*)(id, SEL))objc_msgSend;
+    orig(self, @selector(xg_reloadTableData));
+    @try {
+        id tableViewManager = [self valueForKey:@"m_tableViewMgr"];
+        if (!tableViewManager) return;
+        typedef id (*GetSectionAtFunc)(id, SEL, NSInteger);
+        GetSectionAtFunc getSectionAt = (GetSectionAtFunc)[tableViewManager methodForSelector:@selector(getSectionAt:)];
+        id firstSection = getSectionAt ? getSectionAt(tableViewManager, @selector(getSectionAt:), 0) : nil;
+        if (!firstSection) return;
+        BOOL alreadyAdded = NO;
+        @try {
+            NSArray *cells = [firstSection performSelector:@selector(cells)];
+            for (id cell in cells) {
+                NSString *title = nil;
+                if ([cell respondsToSelector:@selector(title)]) title = [cell performSelector:@selector(title)];
+                else if ([cell respondsToSelector:@selector(getTitle)]) title = [cell performSelector:@selector(getTitle)];
+                if ([title isKindOfClass:[NSString class]] && [title isEqualToString:@"Liquid Glass"]) { alreadyAdded = YES; break; }
+            }
+        } @catch (__unused NSException *e) {}
+        if (alreadyAdded) return;
+        NSMutableArray *newCells = [NSMutableArray array];
+        NSArray *original = nil;
+        @try { original = [firstSection performSelector:@selector(cells)]; } @catch (__unused NSException *e) {}
+        if (!original) original = @[];
+        id xgCell = [objc_getClass("WCTableViewNormalCellManager") normalCellForSel:@selector(xg_openXiaoXueGaoSettings)
+                                                                              target:self
+                                                                               title:@"Liquid Glass"
+                                                                           rightValue:(isLiquidGlassEnabled() ? @"开启" : @"关闭")
+                                                                        accessoryType:1];
+        if (!xgCell) return;
+        [newCells addObject:xgCell];
+        [newCells addObjectsFromArray:original];
+        @try { [firstSection performSelector:@selector(setCells:) withObject:newCells]; } @catch (__unused NSException *e) {}
+        dispatch_async(dispatch_get_main_queue(), ^{
+            @try {
+                MMTableView *tableView = [tableViewManager performSelector:@selector(getTableView)];
+                [tableView reloadData];
+            } @catch (__unused NSException *e) {}
+        });
+    } @catch (__unused NSException *e) {}
+}
+
+static void xg_openXiaoXueGaoSettings_impl(id self, SEL _cmd) {
+    @try {
+        Class cls = NSClassFromString(@"XGLiquidGlassSettingsViewController");
+        if (!cls) return;
+        UIViewController *vc = [[cls alloc] init];
+        if (!vc) return;
+        UINavigationController *nav = [self valueForKey:@"navigationController"];
+        if (!nav) return;
+        [nav pushViewController:vc animated:YES];
+    } @catch (__unused NSException *e) {}
+}
+
+static void installSettingsEntryHook(void) {
+    if (xg_settings_hook_installed) return;
+    Class cls = objc_getClass("NewSettingViewController");
+    if (!cls) return;
+    // 动态注入两个方法实现，避免分类导致的链接期依赖
+    class_addMethod(cls, @selector(xg_reloadTableData), (IMP)xg_reloadTableData_impl, "v@:");
+    class_addMethod(cls, @selector(xg_openXiaoXueGaoSettings), (IMP)xg_openXiaoXueGaoSettings_impl, "v@:");
+    // 交换实现
+    xg_swizzle(cls, @selector(reloadTableData), @selector(xg_reloadTableData));
+    xg_settings_hook_installed = YES;
+}
+
+#pragma mark - 简易设置页：控制 Liquid Glass 开关
+
+@interface XGLiquidGlassSettingsViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property (nonatomic, strong) UITableView *tableView;
+@end
+
+@implementation XGLiquidGlassSettingsViewController
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Liquid Glass";
+    self.view.backgroundColor = [UIColor systemBackgroundColor];
+    self.tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleInsetGrouped];
+    self.tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    self.tableView.dataSource = self;
+    self.tableView.delegate = self;
+    [self.view addSubview:self.tableView];
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView { return 1; }
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section { return 1; }
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section { return @"效果开关"; }
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *cid = @"lg.switch";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cid];
+    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:cid];
+    cell.textLabel.text = @"启用 Liquid Glass";
+    UISwitch *sw = [[UISwitch alloc] init];
+    sw.on = isLiquidGlassEnabled();
+    [sw addTarget:self action:@selector(onToggle:) forControlEvents:UIControlEventValueChanged];
+    cell.accessoryView = sw;
+    return cell;
+}
+
+- (void)onToggle:(UISwitch *)sw {
+    BOOL enable = sw.isOn;
+    setLiquidGlassEnabled(enable);
+    // 立即刷新设置入口右侧值
+    @try {
+        Class newSettingCls = objc_getClass("NewSettingViewController");
+        if (newSettingCls) {
+            // 无法直接刷新外部控制器，这里尽量提示用户
+        }
+    } @catch (__unused NSException *e) {}
+    // 环境变量只在重启 App 后生效，提示用户
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"提示"
+                                                                 message:(enable ? @"已启用 Liquid Glass，部分效果需重启微信生效" : @"已禁用 Liquid Glass，需重启微信彻底生效")
+                                                          preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+@end

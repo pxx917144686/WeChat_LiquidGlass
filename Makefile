@@ -3,7 +3,7 @@ export THEOS_STRICT_LOGOS = 0
 export ERROR_ON_WARNINGS = 0
 export LOGOS_DEFAULT_GENERATOR = internal
 
-# Rootless 插件配置
+# Rootless 无根
 export THEOS_PACKAGE_SCHEME = rootless
 THEOS_PACKAGE_INSTALL_PREFIX = /var/jb
 
@@ -30,7 +30,7 @@ $(TWEAK_NAME)_FILES = $(ASM_SOURCES) $(OBJC_SOURCES) $(SWIFT_SOURCES)
 
 # 使用 Logos 语法
 $(TWEAK_NAME)_CFLAGS = -fobjc-arc
-$(TWEAK_NAME)_FRAMEWORKS = UIKit Foundation
+$(TWEAK_NAME)_FRAMEWORKS = UIKit Foundation CoreFoundation
 
 # 链接库
 $(TWEAK_NAME)_LIBRARIES = 

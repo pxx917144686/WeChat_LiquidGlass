@@ -14,30 +14,8 @@ static void installTabBarFixHooks(void);
 static void applyTabBarSingleLayer(UITabBar *tabBar);
 static void hideTabBarBackgroundRecursive(UIView *view);
 static void installSettingsEntryHook(void);
-
-static void applyVolatileLiquidGlassPrefs(void) __attribute__((unused));
-static void applyVolatileLiquidGlassPrefs(void) {
-    @try {
-        if ([[NSProcessInfo processInfo] operatingSystemVersion].majorVersion < 26) return;
-        if (!isLiquidGlassEnabled()) return;
-        NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
-        NSDictionary *volatilePrefs = @{
-            @"com.apple.SwiftUI.IgnoreSolariumLinkedOnCheck": @YES,
-            @"com.apple.UIKit.EnableLiquidGlass": @YES,
-            @"com.apple.UIKit.ForceLiquidGlass": @YES,
-            @"com.apple.UIKit.EnableSystemMaterials": @YES,
-            @"com.apple.UIKit.ForceSystemMaterials": @YES,
-            @"com.apple.UIKit.EnableLiquidGlassEffects": @YES,
-            @"com.apple.UIKit.ForceLiquidGlassEffects": @YES,
-            @"com.apple.UIKit.EnableSystemBlur": @YES,
-            @"com.apple.UIKit.ForceSystemBlur": @YES,
-        };
-        // 使用 NSRegistrationDomain 作为只读默认值源，避免触碰全局/应用持久域
-        [ud setVolatileDomain:volatilePrefs forName:NSRegistrationDomain];
-    } @catch (__unused NSException *e) {
-    }
-}
-
+static void xg_swizzle(Class cls, SEL original, SEL replacement);
+static void forceEnableWeChatLiquidGlass(void);
 
 // 根据开关在应用域写入/清理偏好
 static void applyOrClearLiquidGlassPrefs(BOOL enable) {
@@ -47,7 +25,18 @@ static void applyOrClearLiquidGlassPrefs(BOOL enable) {
         if (bundleID.length == 0) return;
         CFStringRef appID = (__bridge CFStringRef)bundleID;
         const CFStringRef keys[] = {
+            // SwiftUI Liquid Glass 支持
             CFSTR("com.apple.SwiftUI.IgnoreSolariumLinkedOnCheck"),
+            CFSTR("com.apple.SwiftUI.EnableLiquidGlass"),
+            CFSTR("com.apple.SwiftUI.ForceLiquidGlass"),
+            CFSTR("com.apple.SwiftUI.EnableSystemMaterials"),
+            CFSTR("com.apple.SwiftUI.ForceSystemMaterials"),
+            CFSTR("com.apple.SwiftUI.EnableLiquidGlassEffects"),
+            CFSTR("com.apple.SwiftUI.ForceLiquidGlassEffects"),
+            CFSTR("com.apple.SwiftUI.EnableSystemBlur"),
+            CFSTR("com.apple.SwiftUI.ForceSystemBlur"),
+            
+            // UIKit Liquid Glass 支持
             CFSTR("com.apple.UIKit.EnableLiquidGlass"),
             CFSTR("com.apple.UIKit.ForceLiquidGlass"),
             CFSTR("com.apple.UIKit.EnableSystemMaterials"),
@@ -56,6 +45,23 @@ static void applyOrClearLiquidGlassPrefs(BOOL enable) {
             CFSTR("com.apple.UIKit.ForceLiquidGlassEffects"),
             CFSTR("com.apple.UIKit.EnableSystemBlur"),
             CFSTR("com.apple.UIKit.ForceSystemBlur"),
+            
+            // 微信专用 Liquid Glass 强制启用
+            CFSTR("com.tencent.xin.EnableLiquidGlass"),
+            CFSTR("com.tencent.xin.ForceLiquidGlass"),
+            CFSTR("com.tencent.xin.EnableSystemMaterials"),
+            CFSTR("com.tencent.xin.ForceSystemMaterials"),
+            
+            // 全局 Liquid Glass 强制启用
+            CFSTR("com.apple.UIKit.ForceEnableLiquidGlass"),
+            CFSTR("com.apple.UIKit.ForceEnableSystemMaterials"),
+            CFSTR("com.apple.UIKit.ForceEnableSystemBlur"),
+            
+            // 兼容性强制启用
+            CFSTR("com.apple.UIKit.EnableAdvancedRendering"),
+            CFSTR("com.apple.UIKit.ForceAdvancedRendering"),
+            CFSTR("com.apple.UIKit.EnableModernEffects"),
+            CFSTR("com.apple.UIKit.ForceModernEffects"),
         };
         for (size_t i = 0; i < sizeof(keys)/sizeof(keys[0]); i++) {
             if (enable) {
@@ -77,16 +83,64 @@ static void setLiquidGlassEnabled(BOOL enable) {
     [[NSUserDefaults standardUserDefaults] setBool:enable forKey:@"xg_liquid_glass_enabled"];
     [[NSUserDefaults standardUserDefaults] synchronize];
     applyOrClearLiquidGlassPrefs(enable);
+    
+    // 微信专用：强制启用 Liquid Glass 环境变量
+    if (enable) {
+        setenv("UIKIT_ENABLE_LIQUID_GLASS", "1", 1);
+        setenv("UIKIT_FORCE_LIQUID_GLASS", "1", 1);
+        setenv("UIKIT_ENABLE_SYSTEM_MATERIALS", "1", 1);
+        setenv("UIKIT_FORCE_SYSTEM_MATERIALS", "1", 1);
+        setenv("SWIFTUI_ENABLE_LIQUID_GLASS", "1", 1);
+        setenv("SWIFTUI_FORCE_LIQUID_GLASS", "1", 1);
+    } else {
+        unsetenv("UIKIT_ENABLE_LIQUID_GLASS");
+        unsetenv("UIKIT_FORCE_LIQUID_GLASS");
+        unsetenv("UIKIT_ENABLE_SYSTEM_MATERIALS");
+        unsetenv("UIKIT_FORCE_SYSTEM_MATERIALS");
+        unsetenv("SWIFTUI_ENABLE_LIQUID_GLASS");
+        unsetenv("SWIFTUI_FORCE_LIQUID_GLASS");
+    }
 }
 
+
+// 微信专用：强制启用 Liquid Glass
+static void forceEnableWeChatLiquidGlass(void) {
+    @try {
+        // 检查是否为微信应用
+        NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+        if (![bundleID containsString:@"tencent"] && ![bundleID containsString:@"WeChat"]) return;
+        
+        // 强制启用 Liquid Glass 环境变量
+        setenv("UIKIT_ENABLE_LIQUID_GLASS", "1", 1);
+        setenv("UIKIT_FORCE_LIQUID_GLASS", "1", 1);
+        setenv("UIKIT_ENABLE_SYSTEM_MATERIALS", "1", 1);
+        setenv("UIKIT_FORCE_SYSTEM_MATERIALS", "1", 1);
+        setenv("SWIFTUI_ENABLE_LIQUID_GLASS", "1", 1);
+        setenv("SWIFTUI_FORCE_LIQUID_GLASS", "1", 1);
+        
+        // 强制启用全局偏好设置
+        NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+        [ud setBool:YES forKey:@"UIKIT_ENABLE_LIQUID_GLASS"];
+        [ud setBool:YES forKey:@"UIKIT_FORCE_LIQUID_GLASS"];
+        [ud setBool:YES forKey:@"UIKIT_ENABLE_SYSTEM_MATERIALS"];
+        [ud setBool:YES forKey:@"UIKIT_FORCE_SYSTEM_MATERIALS"];
+        [ud synchronize];
+        
+    } @catch (__unused NSException *e) {}
+}
 
 // 超早期构造器：写入环境变量与持久化偏好（iOS26+）
 __attribute__((constructor(101)))
 static void wechat_early_ctor(void) {
     @autoreleasepool {
         if ([[NSProcessInfo processInfo] operatingSystemVersion].majorVersion < 26) return;
+        
+        // 微信专用：强制启用 Liquid Glass
+        forceEnableWeChatLiquidGlass();
+        
         // 避免使用环境变量导致黑屏风险，仅使用偏好键控制
         applyOrClearLiquidGlassPrefs(isLiquidGlassEnabled());
+        
         // 只有开启时才安装功能性 Hook，且延后至主线程，等窗口就绪
         if (isLiquidGlassEnabled()) {
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -122,21 +176,35 @@ static void hideTabBarBackgroundRecursive(UIView *view) {
 static void applyTabBarSingleLayer(UITabBar *tabBar) {
     if (!tabBar) return;
     if (!isLiquidGlassEnabled()) return; // 关闭时完全不改动 TabBar
+    
     // 防抖：同一 tabBar 只应用一次，避免频繁 layout 导致卡顿
     static const void *kLGAppliedKey = &kLGAppliedKey;
     NSNumber *applied = objc_getAssociatedObject(tabBar, kLGAppliedKey);
     if ([applied boolValue]) return;
-    // 统一使用系统外观：去掉任何自绘/毛玻璃叠层
+    
+    // 微信专用：强制启用 Liquid Glass 效果
     @try {
-        if (@available(iOS 13.0, *)) {
+        if (@available(iOS 14.0, *)) {
             UITabBarAppearance *appearance = tabBar.standardAppearance ?: [[UITabBarAppearance alloc] init];
-            // 开启 Liquid Glass：透明背景，交由系统视觉效果处理
+            
+            // 强制启用 Liquid Glass：透明背景，交由系统视觉效果处理
             [appearance configureWithTransparentBackground];
             appearance.backgroundEffect = nil;
             appearance.backgroundColor = [UIColor clearColor];
             appearance.shadowColor = [UIColor clearColor];
             appearance.shadowImage = [UIImage new];
+            
+            // 微信专用：强制启用系统材质效果
+            if (@available(iOS 15.0, *)) {
+                // 使用系统默认的 Liquid Glass 效果
+                appearance.backgroundEffect = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
+                tabBar.scrollEdgeAppearance = appearance;
+            }
+            
             tabBar.standardAppearance = appearance;
+            tabBar.translucent = YES;
+            
+            // 强制启用系统材质
             if (@available(iOS 15.0, *)) {
                 tabBar.scrollEdgeAppearance = appearance;
             }
@@ -146,27 +214,20 @@ static void applyTabBarSingleLayer(UITabBar *tabBar) {
             tabBar.barTintColor = [UIColor clearColor];
             tabBar.translucent = YES;
         }
+        
+        // 微信专用：强制启用系统视觉效果
+        tabBar.translucent = YES;
+        tabBar.backgroundColor = [UIColor clearColor];
+        
     } @catch (__unused NSException *e) {}
 
-    // 直接移除/隐藏微信自定义的底板视图
+    // 直接移除/隐藏微信自定义的底板视图，让系统 Liquid Glass 生效
     @try {
         hideTabBarBackgroundRecursive(tabBar);
     } @catch (__unused NSException *e) {}
 
     // 标记已应用，避免重复执行
     objc_setAssociatedObject(tabBar, kLGAppliedKey, @(YES), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-}
-
-static void swizzle(Class cls, SEL original, SEL replacement) {
-    Method m1 = class_getInstanceMethod(cls, original);
-    Method m2 = class_getInstanceMethod(cls, replacement);
-    if (!m1 || !m2) return;
-    BOOL added = class_addMethod(cls, original, method_getImplementation(m2), method_getTypeEncoding(m2));
-    if (added) {
-        class_replaceMethod(cls, replacement, method_getImplementation(m1), method_getTypeEncoding(m1));
-    } else {
-        method_exchangeImplementations(m1, m2);
-    }
 }
 
 // UITabBarController viewDidAppear，进入主界面后统一清理一次
@@ -196,8 +257,8 @@ static void installTabBarFixHooks(void) {
         // 仅在微信内启用
         NSString *bid = [[NSBundle mainBundle] bundleIdentifier];
         if (![bid containsString:@"tencent"] && ![bid containsString:@"WeChat"]) return;
-        swizzle([UITabBarController class], @selector(viewDidAppear:), @selector(lg_viewDidAppear:));
-        swizzle([UITabBar class], @selector(layoutSubviews), @selector(lg_layoutSubviews));
+        xg_swizzle([UITabBarController class], @selector(viewDidAppear:), @selector(lg_viewDidAppear:));
+        xg_swizzle([UITabBar class], @selector(layoutSubviews), @selector(lg_layoutSubviews));
         // 对已在屏幕上的 tabBar 立即应用一次
         dispatch_async(dispatch_get_main_queue(), ^{
             @try {
@@ -320,7 +381,7 @@ static void installSettingsEntryHook(void) {
     xg_settings_hook_installed = YES;
 }
 
-#pragma mark - 简易设置页：控制 Liquid Glass 开关
+#pragma mark - 设置页：控制 Liquid Glass 开关
 
 @interface XGLiquidGlassSettingsViewController : UIViewController <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, strong) UITableView *tableView;
@@ -364,7 +425,7 @@ static void installSettingsEntryHook(void) {
             // 无法直接刷新外部控制器，这里尽量提示用户
         }
     } @catch (__unused NSException *e) {}
-    // 环境变量只在重启 App 后生效，提示用户
+    // 环境变量只在重启 App 后生效，提示
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"提示"
                                                                  message:(enable ? @"已启用 Liquid Glass，部分效果需重启微信生效" : @"已禁用 Liquid Glass，需重启微信彻底生效")
                                                           preferredStyle:UIAlertControllerStyleAlert];

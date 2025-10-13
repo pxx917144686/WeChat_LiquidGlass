@@ -20,7 +20,7 @@ TARGET = iphone:clang:latest:15.6
 include $(THEOS)/makefiles/common.mk
 
 # 插件名称
-TWEAK_NAME = WeChat
+TWEAK_NAME = WeChat_LiquidGlass
 
 # 源代码文件
 ASM_SOURCES = $(shell find . -name "*.s")

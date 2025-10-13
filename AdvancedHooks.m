@@ -14,6 +14,7 @@ static void installTabBarFixHooks(void);
 static void applyTabBarSingleLayer(UITabBar *tabBar);
 static void hideTabBarBackgroundRecursive(UIView *view);
 static void installSettingsEntryHook(void);
+static void scheduleSettingsHookRetry(void);
 static void xg_swizzle(Class cls, SEL original, SEL replacement);
 static void forceEnableWeChatLiquidGlass(void);
 
@@ -147,7 +148,8 @@ static void wechat_early_ctor(void) {
                 installTabBarFixHooks();
             });
         }
-        installSettingsEntryHook();
+		// 设置入口 Hook 采用重试方式，等待目标类加载完成
+		scheduleSettingsHookRetry();
     }
 }
 
@@ -371,14 +373,43 @@ static void xg_openXiaoXueGaoSettings_impl(id self, SEL _cmd) {
 
 static void installSettingsEntryHook(void) {
     if (xg_settings_hook_installed) return;
-    Class cls = objc_getClass("NewSettingViewController");
-    if (!cls) return;
+	// 兼容不同版本/渠道的设置控制器类名
+	const char *candidateClassNames[] = {
+		"NewSettingViewController",
+		"MMNewSettingViewController",
+		"SettingViewController",
+		"MoreSettingViewController",
+		"WCNewSettingViewController"
+	};
+	Class cls = NULL;
+	for (size_t i = 0; i < sizeof(candidateClassNames)/sizeof(candidateClassNames[0]); i++) {
+		cls = objc_getClass(candidateClassNames[i]);
+		if (cls) break;
+	}
+	if (!cls) return;
     // 动态注入两个方法实现，避免分类导致的链接期依赖
     class_addMethod(cls, @selector(xg_reloadTableData), (IMP)xg_reloadTableData_impl, "v@:");
     class_addMethod(cls, @selector(xg_openXiaoXueGaoSettings), (IMP)xg_openXiaoXueGaoSettings_impl, "v@:");
     // 交换实现
     xg_swizzle(cls, @selector(reloadTableData), @selector(xg_reloadTableData));
     xg_settings_hook_installed = YES;
+}
+
+// 在主线程上以退避方式重试安装设置入口 Hook，最大重试次数防止死循环
+static void scheduleSettingsHookRetry(void) {
+	static int retryCount = 0;
+	const int kMaxRetry = 30; // 最多重试 30 次（约 15 秒）
+	const double kInterval = 0.5; // 500ms 一次
+	if (xg_settings_hook_installed) return;
+	dispatch_async(dispatch_get_main_queue(), ^{
+		installSettingsEntryHook();
+		if (!xg_settings_hook_installed && retryCount < kMaxRetry) {
+			retryCount++;
+			dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kInterval * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+				scheduleSettingsHookRetry();
+			});
+		}
+	});
 }
 
 #pragma mark - 设置页：控制 Liquid Glass 开关

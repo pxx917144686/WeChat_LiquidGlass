@@ -41,5 +41,5 @@ jobs:
       - name: Upload specific Deb packages
         uses: actions/upload-artifact@v4.6.0
         with:
-          name: DYYY
+          name: WeChat_LiquidGlass
           path: ${{ github.workspace }}/*.deb

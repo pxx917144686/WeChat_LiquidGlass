@@ -25,3 +25,13 @@ make clean && make package
 </div>
 
 <hr style="border: 1px solid #ccc; margin: 20px 0;">
+
+# 新增:工作流 编译 (示范)
+
+<!-- 图片上下排列 -->
+<div style="display: flex; flex-direction: column; align-items: center; gap: 30px; margin: 20px 0;">
+    <img src="./x/5.png" width="80%" style="max-width: 600px;" />
+    <img src="./x/6.png" width="80%" style="max-width: 600px;" />
+</div>
+
+<hr style="border: 1px solid #ccc; margin: 20px 0;">

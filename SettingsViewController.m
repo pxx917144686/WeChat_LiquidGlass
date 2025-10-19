@@ -131,7 +131,7 @@
     if (!sectionClass || !cellClass) return;
     
     // 创建 Liquid Glass 分区
-    id section = [sectionClass sectionInfoHeader:@"Liquid Glass"];
+    id section = [sectionClass sectionInfoHeader:@""];
     if (!section) return;
     
     // Liquid Glass 主开关
@@ -156,21 +156,39 @@
 - (void)handleLiquidGlassSwitch:(UISwitch *)switchView {
     [[NSUserDefaults standardUserDefaults] setBool:switchView.isOn forKey:@"xg_liquid_glass_enabled"];
     [[NSUserDefaults standardUserDefaults] synchronize];
-    NSString *message = switchView.isOn ? @"已启用 Liquid Glass\n\n部分效果需重启微信生效" : @"已禁用 Liquid Glass\n\n重启微信后彻底恢复默认";
-    [self showAlertWithTitle:@"Liquid Glass" message:message];
+    
+    // 调用AdvancedHooks.m中的设置函数来应用偏好设置
+    extern void setLiquidGlassEnabled(BOOL enable);
+    setLiquidGlassEnabled(switchView.isOn);
+    
+    // 直接自动重启微信，无需弹出框
+    [self restartWeChatApp];
 }
 
 
 #pragma mark - 辅助方法
 
-- (void)showAlertWithTitle:(NSString *)title message:(NSString *)message {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
-                                                                   message:message
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"确定" 
-                                              style:UIAlertActionStyleDefault 
-                                            handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
+- (void)restartWeChatApp {
+    // 保存设置后立即重启
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        // 获取当前应用的可执行文件路径
+        NSString *executablePath = [[NSBundle mainBundle] executablePath];
+        NSArray *arguments = [[NSProcessInfo processInfo] arguments];
+        
+        // 准备execv参数
+        char **argv = malloc((arguments.count + 1) * sizeof(char *));
+        for (NSUInteger i = 0; i < arguments.count; i++) {
+            argv[i] = (char *)[arguments[i] UTF8String];
+        }
+        argv[arguments.count] = NULL;
+        
+        // 使用execv重新启动应用
+        execv([executablePath UTF8String], argv);
+        
+        // 如果execv失败，释放内存并退出
+        free(argv);
+        exit(0);
+    });
 }
 
 @end

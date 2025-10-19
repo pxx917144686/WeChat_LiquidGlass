@@ -11,11 +11,9 @@ THEOS_PACKAGE_INSTALL_PREFIX = /var/jb
 export THEOS_PACKAGE_DIR = $(CURDIR)
 
 # 设置工具路径
-export PATH := $(CURDIR):$(PATH)
-
-# TARGET
+export PATH := $(CURDIR):$(PATH) - 支持iOS 16.0以上版本
 ARCHS = arm64
-TARGET = iphone:clang:latest:15.6
+TARGET = iphone:clang:latest:16.0
 # 引入 Theos 的通用设置
 include $(THEOS)/makefiles/common.mk
 
@@ -23,14 +21,14 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = WeChat_LiquidGlass
 
 # 源代码文件
-ASM_SOURCES = $(shell find . -name "*.s")
-OBJC_SOURCES = $(shell find . -name "*.m") $(shell find . -name "*.xm")
-SWIFT_SOURCES = $(shell find . -name "*.swift")
-$(TWEAK_NAME)_FILES = $(ASM_SOURCES) $(OBJC_SOURCES) $(SWIFT_SOURCES)
+OBJC_SOURCES = AdvancedHooks.m SettingsViewController.m 
+$(TWEAK_NAME)_FILES = $(ASM_SOURCES) $(OBJC_SOURCES)
 
 # 使用 Logos 语法
 $(TWEAK_NAME)_CFLAGS = -fobjc-arc
+# 移除Swift相关配置
 $(TWEAK_NAME)_FRAMEWORKS = UIKit Foundation CoreFoundation
+$(TWEAK_NAME)_LDFLAGS = 
 
 # 链接库
 $(TWEAK_NAME)_LIBRARIES = 
